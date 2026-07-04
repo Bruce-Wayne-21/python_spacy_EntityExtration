@@ -277,10 +277,12 @@ async def llm_search(request: LLMSearchRequest) -> LLMSearchResponse:
             # 1) LLM entity extraction.
             ex = await llm_extractor.extract(request.text, http)
 
-            # 2) Build the Qdrant filter from the extracted capacity range.
+            # 2) Build the Qdrant filter from the extracted capacity + price ranges.
             qdrant_filter = llm_extractor.build_filter(
                 min_amount=ex.min_amount,
                 max_amount=ex.max_amount,
+                min_price=ex.min_price,
+                max_price=ex.max_price,
             )
 
             # 3) Embed the clean query and run the filtered vector search.

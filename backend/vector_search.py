@@ -28,7 +28,7 @@ class VectorSearchClient:
     def __init__(self) -> None:
         self.qdrant_endpoint = os.environ["QDRANT_ENDPOINT"].rstrip("/")
         self.qdrant_api_key = os.environ.get("QDRANT_API_KEY", "")
-        self.collection = os.environ.get("QDRANT_COLLECTION", "space_v2")
+        self.collection = os.environ.get("QDRANT_COLLECTION", "space_v4")
         self.openai_api_key = os.environ["OPENAI_API_KEY"]
 
     # -- OpenAI embedding -------------------------------------------------

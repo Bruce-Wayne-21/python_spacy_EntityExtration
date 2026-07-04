@@ -150,24 +150,39 @@ async def extract(text: str, client: httpx.AsyncClient) -> LLMExtraction:
 def build_filter(
     min_amount: Optional[int],
     max_amount: Optional[int],
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Build a Qdrant `filter` from the extracted capacity range.
+    """Build a Qdrant `filter` from the extracted capacity and price ranges.
 
-    The payload field `capacity` is a number (the venue's capacity), so:
+    Targets the `space_v4` payload, which mirrors the C# SmartAssetSearchService:
+
+    Capacity — the `capacity` field is the venue's capacity (a number), so:
         min_amount -> capacity >= min_amount
         max_amount -> capacity <= max_amount
 
-    Price is intentionally NOT filtered here: the payload stores price as a
-    formatted string which Qdrant cannot range-filter.
+    Price — each asset has a price BAND (`min_price`..`max_price`). We keep an
+    asset when its band OVERLAPS the user's requested budget:
+        user min_price -> asset.max_price >= min_price  (not wholly below floor)
+        user max_price -> asset.min_price <= max_price  (not wholly above ceiling)
+
+    NOTE: `min_price`/`max_price` must be indexed as float payload fields in
+    Qdrant, or `range` filters return HTTP 400 "Index required but not found".
     """
-    conditions: Dict[str, Any] = {}
+    must: List[Dict[str, Any]] = []
+
+    capacity: Dict[str, Any] = {}
     if min_amount is not None:
-        conditions["gte"] = min_amount
+        capacity["gte"] = min_amount
     if max_amount is not None:
-        conditions["lte"] = max_amount
+        capacity["lte"] = max_amount
+    if capacity:
+        must.append({"key": "capacity", "range": capacity})
 
-    if not conditions:
-        return None
+    # Price overlap: swap which asset-field each user bound compares against.
+    if min_price is not None:
+        must.append({"key": "max_price", "range": {"gte": min_price}})
+    if max_price is not None:
+        must.append({"key": "min_price", "range": {"lte": max_price}})
 
-    must: List[Dict[str, Any]] = [{"key": "capacity", "range": conditions}]
-    return {"must": must}
+    return {"must": must} if must else None
