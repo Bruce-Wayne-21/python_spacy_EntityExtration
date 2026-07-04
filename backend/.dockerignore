@@ -1,0 +1,12 @@
+# Never ship the local virtualenv or caches into the image.
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets are injected at runtime via env_file, never baked into the image.
+.env
+
+# Docker files themselves don't belong in the build context.
+Dockerfile
+.dockerignore
+docker-compose.yml

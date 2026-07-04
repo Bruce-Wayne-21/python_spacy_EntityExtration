@@ -1,0 +1,31 @@
+# Smart Booking Hybrid Search — local run
+# ---------------------------------------
+#   docker compose up --build     # build + start (foreground, logs visible)
+#   docker compose up -d --build  # same, detached (background)
+#   docker compose down           # stop + remove
+#   docker compose restart        # restart
+#
+# Swagger UI: http://127.0.0.1:8080/docs
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: smart-booking-backend
+    container_name: smart-booking-backend
+    ports:
+      # Host port 8080 -> container 8000. (Host 8000 can be left squatted by a
+      # stale WSL/uvicorn socket on some machines; 8080 sidesteps that.)
+      - "8080:8000"
+    env_file:
+      - ./backend/.env       # QDRANT_* / OPENAI_* injected at runtime, not baked in
+    restart: unless-stopped
+    healthcheck:
+      # Uses the app's own /health endpoint. Python is already in the image,
+      # so no need to install curl.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
