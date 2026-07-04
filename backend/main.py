@@ -18,6 +18,12 @@ Two endpoints:
       This is the logic we port back into OptimoGov's SmartAssetSearchService
       once it's proven here.
 
+  POST /api/llm-search   ← PROTOTYPE (LLM variant)
+      Same hybrid flow as /api/search, but entity extraction is done by an
+      OpenAI chat model (gpt-4o-mini) instead of spaCy. Extracts min/max amount
+      (capacity), min/max price, date and time via a system prompt, then applies
+      the capacity range as a Qdrant filter.
+
 Run with:
     uvicorn main:app --reload --port 8000
 Swagger UI:
@@ -33,6 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
+import llm_extractor
 import nlp_extractor
 from vector_search import VectorSearchClient
 
@@ -108,6 +115,33 @@ class SearchResponse(BaseModel):
     results: List[Dict[str, Any]]
 
 
+class LLMExtractRequest(BaseModel):
+    text: str
+
+
+class LLMExtractResponse(BaseModel):
+    min_amount: Optional[int]
+    max_amount: Optional[int]
+    min_price: Optional[float]
+    max_price: Optional[float]
+    date: Optional[str]
+    time: Optional[str]
+    clean_query: str
+
+
+class LLMSearchRequest(BaseModel):
+    text: str
+    top_k: int = 10
+
+
+class LLMSearchResponse(BaseModel):
+    original_query: str
+    clean_query: str
+    entities: Dict[str, Any]
+    applied_qdrant_filter: Optional[Dict[str, Any]]
+    results: List[Dict[str, Any]]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -173,6 +207,115 @@ async def search(request: SearchRequest) -> SearchResponse:
             "price_ceiling": ex.price_ceiling,
             "dates": ex.dates,
             "times": ex.times,
+        },
+        applied_qdrant_filter=qdrant_filter,
+        results=results,
+    )
+
+
+@app.post("/api/llm-extract", response_model=LLMExtractResponse)
+async def llm_extract(request: LLMExtractRequest) -> LLMExtractResponse:
+    """LLM entity extraction only — no Qdrant search.
+
+    Returns min/max amount (capacity), min/max price, date, time and the clean
+    semantic query. Wire the filter/search yourself, or use /api/llm-search for
+    the full flow.
+    """
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
+    try:
+        async with httpx.AsyncClient() as http:
+            ex = await llm_extractor.extract(request.text, http)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream error from {exc.request.url}: "
+            f"{exc.response.status_code} {exc.response.text[:300]}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach {exc.request.url}: {exc}",
+        ) from exc
+
+    return LLMExtractResponse(
+        min_amount=ex.min_amount,
+        max_amount=ex.max_amount,
+        min_price=ex.min_price,
+        max_price=ex.max_price,
+        date=ex.date,
+        time=ex.time,
+        clean_query=ex.clean_query,
+    )
+
+
+@app.post("/api/llm-search", response_model=LLMSearchResponse)
+async def llm_search(request: LLMSearchRequest) -> LLMSearchResponse:
+    """LLM-powered hybrid search.
+
+    Full flow:
+        raw query
+          -> LLM extract (min/max amount, min/max price, date, time, clean_query)
+          -> build Qdrant filter (capacity range)
+          -> embed(clean_query) via OpenAI
+          -> filtered Qdrant vector search
+          -> matched assets
+
+    Price is extracted but NOT filtered — the Qdrant payload stores price as a
+    formatted string, so it can't be range-filtered (see llm_extractor).
+    """
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
+    client = get_vector_client()
+
+    try:
+        async with httpx.AsyncClient() as http:
+            # 1) LLM entity extraction.
+            ex = await llm_extractor.extract(request.text, http)
+
+            # 2) Build the Qdrant filter from the extracted capacity range.
+            qdrant_filter = llm_extractor.build_filter(
+                min_amount=ex.min_amount,
+                max_amount=ex.max_amount,
+            )
+
+            # 3) Embed the clean query and run the filtered vector search.
+            vector = await client.embed(ex.clean_query or request.text, http)
+            results = await client.search(
+                vector=vector,
+                client=http,
+                qdrant_filter=qdrant_filter,
+                top_k=request.top_k,
+            )
+    except ValueError as exc:
+        # LLM returned non-JSON.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream error from {exc.request.url}: "
+            f"{exc.response.status_code} {exc.response.text[:300]}",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach {exc.request.url}: {exc}",
+        ) from exc
+
+    return LLMSearchResponse(
+        original_query=request.text,
+        clean_query=ex.clean_query,
+        entities={
+            "min_amount": ex.min_amount,
+            "max_amount": ex.max_amount,
+            "min_price": ex.min_price,
+            "max_price": ex.max_price,
+            "date": ex.date,
+            "time": ex.time,
         },
         applied_qdrant_filter=qdrant_filter,
         results=results,

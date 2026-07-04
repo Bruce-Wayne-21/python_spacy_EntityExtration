@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m spacy download en_core_web_sm
 
 # Copy application source.
-COPY main.py nlp_extractor.py vector_search.py ./
+COPY main.py nlp_extractor.py llm_extractor.py vector_search.py ./
 
 EXPOSE 8000
 
