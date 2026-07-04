@@ -20,6 +20,12 @@ services:
       - "8080:8000"
     env_file:
       - ./backend/.env       # QDRANT_* / OPENAI_* injected at runtime, not baked in
+    # Explicit public resolvers. The default compose-network DNS can fail on
+    # Windows/WSL2 after a host sleep/resume ("Temporary failure in name
+    # resolution"); pinning these makes outbound calls (OpenAI/Qdrant) reliable.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
     healthcheck:
       # Uses the app's own /health endpoint. Python is already in the image,
